@@ -1,13 +1,13 @@
 # Packaging
 
-Notes for distributing secret-runc as a distribution package or image. The
+Notes for distributing Run cage as a distribution package or image. The
 binary has no configuration file and no persistent state; everything below
 is about where files go and what a package must not do.
 
 ## Build
 
 ```sh
-CGO_ENABLED=0 go build -trimpath -o secret-runc ./cmd/secret-runc
+CGO_ENABLED=0 go build -trimpath -o runcage ./cmd/runcage
 ```
 
 - The Go version is set in `go.mod`. The result is a static binary with no
@@ -20,8 +20,8 @@ CGO_ENABLED=0 go build -trimpath -o secret-runc ./cmd/secret-runc
 
 | Path | Mode | Notes |
 |---|---|---|
-| `/usr/bin/secret-runc` | `0755 root:root` | Required. |
-| `/usr/lib/systemd/system/docker.service.d/secret-runc.conf` | `0644` | Optional, from `contrib/systemd/docker.service.d/`. Systemd hosts only. |
+| `/usr/bin/runcage` | `0755 root:root` | Required. |
+| `/usr/lib/systemd/system/docker.service.d/runcage.conf` | `0644` | Optional, from `contrib/systemd/docker.service.d/`. Systemd hosts only. |
 | `LICENSE`, `README.md`, `docs/` | `0644` | CC0 1.0. |
 
 - The binary must be owned by root and writable only by root: Docker runs it
@@ -41,7 +41,7 @@ Docker learns about the runtime from `/etc/docker/daemon.json`:
 ```json
 {
   "runtimes": {
-    "secrets": { "path": "/usr/bin/secret-runc" }
+    "runcage": { "path": "/usr/bin/runcage" }
   }
 }
 ```
@@ -49,10 +49,10 @@ Docker learns about the runtime from `/etc/docker/daemon.json`:
 - Do not overwrite or rewrite `daemon.json` from a package: it is
   administrator-owned and Docker refuses to start if it is invalid. Tell the
   administrator to add the entry (post-install message, documentation).
-- Do not also pass `--add-runtime secrets=...` to dockerd: Docker refuses to
+- Do not also pass `--add-runtime runcage=...` to dockerd: Docker refuses to
   start when a runtime is defined both ways.
-- Keep the runtime name `secrets`. Compose files select it with
-  `runtime: secrets`, so a different name makes them non-portable.
+- Keep the runtime name `runcage`. Compose files select it with
+  `runtime: runcage`, so a different name makes them non-portable.
 - Docker must be restarted after the entry is added.
 - Do not make it Docker's default runtime. Containers without a SOPS document
   pass through unchanged, but the default should stay an explicit choice.
@@ -61,7 +61,7 @@ Docker learns about the runtime from `/etc/docker/daemon.json`:
 
 Required at runtime:
 
-- Rootful Docker using runc. secret-runc runs `/usr/bin/runc`, or the first
+- Rootful Docker using runc. Run cage runs `/usr/bin/runc`, or the first
   `runc` on the daemon's `PATH` that is not itself. If runc is installed
   elsewhere, make sure it is on `PATH` for containerd.
 - Linux 6.4 or later (the secrets tmpfs uses `noswap`).
@@ -105,7 +105,7 @@ These are compiled in and cannot be changed by packaging:
 - Upgrades need no migration. The binary is only executed when a container
   is created, so replacing it in place does not affect running containers;
   they use the new version on their next start.
-- After removal, containers that use `runtime: secrets` fail to start until
+- After removal, containers that use `runtime: runcage` fail to start until
   the runtime is reinstalled or removed from `daemon.json` and from their
   Compose files. Remove the `daemon.json` entry as part of uninstalling.
 - No files are left behind at runtime: secrets live on per-container tmpfs

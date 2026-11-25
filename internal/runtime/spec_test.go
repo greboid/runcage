@@ -15,7 +15,7 @@ import (
 	"g5d.dev/runcage/internal/injection"
 )
 
-const self = "/usr/bin/secret-runc"
+const self = "/usr/bin/runcage"
 
 type fakeInfo struct{ mode fs.FileMode }
 

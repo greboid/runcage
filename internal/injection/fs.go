@@ -100,7 +100,7 @@ func writeSecrets(dirfd int, secrets map[string][]byte, uid, gid uint32) error {
 	names := make([]string, 0, len(secrets))
 	for name := range secrets {
 		if !ValidName(name) {
-			return fmt.Errorf("key %q cannot be a secret file name (must match [A-Za-z_][A-Za-z0-9_]*); select other keys with com.greboid.secrets.keys", name)
+			return fmt.Errorf("key %q cannot be a secret file name (must match [A-Za-z_][A-Za-z0-9_]*); select other keys with g5d.dev/runcage/keys", name)
 		}
 		names = append(names, name)
 	}

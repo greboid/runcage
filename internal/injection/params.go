@@ -39,7 +39,7 @@ type Params struct {
 
 func (p Params) Args(hook string) []string {
 	return []string{
-		"secret-runc", HookCommand, hook,
+		"runcage", HookCommand, hook,
 		"--source=" + p.Source,
 		"--rootfs=" + p.Rootfs,
 		"--owner=" + FormatOwner(p.UID, p.GID),

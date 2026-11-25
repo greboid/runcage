@@ -1,11 +1,11 @@
-# RuncAge
+# Runcage
 
 > [!CAUTION]
 > This code is entirely written by an LLM.  I use it myself and it does
 > what I expect, but I can't guarantee anything.\
 > I find it useful and does something I couldn't find elsewhere.
 
-`secret-runc` is a thin OCI runtime wrapper around `runc` that decrypts a SOPS
+Run cage is a thin OCI runtime wrapper around `runc` that decrypts a SOPS
 document and provides its keys as files in `/run/secrets`, on a read-only
 per-container tmpfs. It is configured with plain Compose `secrets:`, needs no
 daemon or systemd service, and leaves no plaintext on disk or in
@@ -18,7 +18,7 @@ unmodified.
 services:
   app:
     image: example/app
-    runtime: secrets
+    runtime: runcage
     secrets:
       - source: app
         target: /run/sops/secrets.yaml
@@ -29,7 +29,7 @@ secrets:
 ```
 
 `app` gets each key of `secrets.sops.yaml` as a read-only file in
-`/run/secrets`. Without `runtime: secrets` it gets only the ciphertext.
+`/run/secrets`. Without `runtime: runcage` it gets only the ciphertext.
 
 ## Documentation
 

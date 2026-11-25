@@ -1,6 +1,6 @@
 # Usage
 
-How to give a Compose service secrets with secret-runc. This assumes the
+How to give a Compose service secrets with Run cage. This assumes the
 binary is installed, the `secrets` runtime is registered and the host has an
 age identity (see [install.md](install.md)).
 
@@ -49,7 +49,7 @@ Commit `secrets.sops.yaml`; it only contains ciphertext.
 services:
   app:
     image: example/app
-    runtime: secrets
+    runtime: runcage
     user: "65532:65532"
     secrets:
       - source: app
@@ -60,7 +60,7 @@ secrets:
     file: ./secrets.sops.yaml
 ```
 
-- `runtime: secrets` runs the container through secret-runc.
+- `runtime: runcage` runs the container through Run cage.
 - The secret's `target` must be directly under `/run/sops/`. The filename does
   not matter.
 - `file` is relative to the Compose file.
@@ -98,7 +98,7 @@ directory = /run/secrets
 ```
 
 Each file becomes a variable of the same name. If the container is started
-without secret-runc, `/run/secrets` does not exist and secret-env starts the
+without Run cage, `/run/secrets` does not exist and secret-env starts the
 application with no secrets.
 
 ## Options
@@ -109,20 +109,20 @@ Set as service annotations:
 services:
   app:
     annotations:
-      com.greboid.secrets.keys: DATABASE_PASSWORD
-      com.greboid.secrets.owner: "1000:1000"
+      g5d.dev/runcage/keys: DATABASE_PASSWORD
+      g5d.dev/runcage/owner: "1000:1000"
 ```
 
 | Annotation | Default | Meaning |
 |---|---|---|
-| `com.greboid.secrets.keys` | every key | Comma-separated keys to write. Each must exist in the document. |
-| `com.greboid.secrets.owner` | the container's `user` | `uid:gid` for the files, numeric only. |
+| `g5d.dev/runcage/keys` | every key | Comma-separated keys to write. Each must exist in the document. |
+| `g5d.dev/runcage/owner` | the container's `user` | `uid:gid` for the files, numeric only. |
 
 Set the owner when the container starts as root and its entrypoint drops to
 another user: by default the files are owned by root and the dropped user
 cannot read them.
 
-Any other `com.greboid.secrets.*` annotation is an error.
+Any other `g5d.dev/runcage/*` annotation is an error.
 
 ## Sharing a document
 
@@ -132,16 +132,16 @@ selected keys:
 ```yaml
 services:
   web:
-    runtime: secrets
+    runtime: runcage
     annotations:
-      com.greboid.secrets.keys: API_KEY
+      g5d.dev/runcage/keys: API_KEY
     secrets:
       - source: shared
         target: /run/sops/secrets.yaml
   worker:
-    runtime: secrets
+    runtime: runcage
     annotations:
-      com.greboid.secrets.keys: DATABASE_PASSWORD,API_KEY
+      g5d.dev/runcage/keys: DATABASE_PASSWORD,API_KEY
     secrets:
       - source: shared
         target: /run/sops/secrets.yaml
@@ -171,18 +171,18 @@ sops updatekeys secrets.sops.yaml   # after adding the recipient to .sops.yaml
 sops --rotate --in-place --add-age age1new... secrets.sops.yaml
 ```
 
-## Without secret-runc
+## Without Run cage
 
-If `runtime: secrets` is left out, the container gets the encrypted document
+If `runtime: runcage` is left out, the container gets the encrypted document
 at `/run/sops/secrets.yaml` and no `/run/secrets`. Nothing is decrypted, so
-this is safe, but the application gets no secrets. If `runtime: secrets` is
+this is safe, but the application gets no secrets. If `runtime: runcage` is
 set on a host where the runtime is not registered, Docker refuses to start
 the container.
 
 ## When a container will not start
 
 Errors appear in the `docker compose up` or `docker start` output, ending
-with `secret-runc: <reason>`. Common reasons:
+with `runcage: <reason>`. Common reasons:
 
 | Message | Cause |
 |---|---|
@@ -190,8 +190,8 @@ with `secret-runc: <reason>`. Common reasons:
 | `data key recovery failed: the age identity cannot decrypt this document` | The document is not encrypted to this host's recipient. |
 | `integrity check failed: MAC mismatch ...` | The document was edited without sops, or is corrupt. |
 | `secret "X" has a integer value; all values must be YAML strings` | Quote the value in the document. |
-| `key "X" not in document` | A key in `com.greboid.secrets.keys` is missing from the document. |
-| `key "x.y" cannot be a secret file name ...` | Rename the key, or leave it out with `com.greboid.secrets.keys`. |
+| `key "X" not in document` | A key in `g5d.dev/runcage/keys` is missing from the document. |
+| `key "x.y" cannot be a secret file name ...` | Rename the key, or leave it out with `g5d.dev/runcage/keys`. |
 | `more than one document under /run/sops` | Only one document per service. |
 | `existing mount at /run/secrets conflicts with /run/secrets` | Remove the other mount (for example a `tmpfs:` entry) at or under `/run/secrets`. |
 | `cannot open /run/secrets: ...` | The image has `/run` as a symlink. |

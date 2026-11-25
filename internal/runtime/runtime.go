@@ -113,7 +113,7 @@ func FindRunc(self string) (string, error) {
 
 // containerd reads errors from runc's log, not stderr.
 func report(inv Invocation, err error) {
-	msg := "secret-runc: " + err.Error()
+	msg := "runcage: " + err.Error()
 	fmt.Fprintln(os.Stderr, msg)
 	if inv.Log == "" {
 		return

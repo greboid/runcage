@@ -50,7 +50,7 @@ func loadSOPS(source string) (map[string][]byte, error) {
 
 func Main(args []string, stdin io.Reader, stderr io.Writer) int {
 	if err := run(args, stdin); err != nil {
-		fmt.Fprintf(stderr, "secret-runc: %v\n", err)
+		fmt.Fprintf(stderr, "runcage: %v\n", err)
 		return 1
 	}
 	return 0

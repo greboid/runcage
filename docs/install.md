@@ -11,8 +11,8 @@
 Build a static binary and install it root-owned:
 
 ```sh
-CGO_ENABLED=0 go build -trimpath -o secret-runc ./cmd/secret-runc
-install -o root -g root -m 0755 secret-runc /usr/bin/secret-runc
+CGO_ENABLED=0 go build -trimpath -o runcage ./cmd/runcage
+install -o root -g root -m 0755 runcage /usr/bin/runcage
 ```
 
 Docker records the path in each container's hooks, so keep it stable;
@@ -23,7 +23,7 @@ replacing the binary in place is fine.
 ```json
 {
   "runtimes": {
-    "secrets": { "path": "/usr/bin/secret-runc" }
+    "runcage": { "path": "/usr/bin/runcage" }
   }
 }
 ```
@@ -65,8 +65,8 @@ each start allows 45s for the identity, so hosts that start more than a few
 dozen secret containers at once need it.
 
 ```sh
-install -D -m 0644 contrib/systemd/docker.service.d/secret-runc.conf \
-  /etc/systemd/system/docker.service.d/secret-runc.conf
+install -D -m 0644 contrib/systemd/docker.service.d/runcage.conf \
+  /etc/systemd/system/docker.service.d/runcage.conf
 systemctl daemon-reload
 systemctl restart docker
 ```

@@ -18,7 +18,7 @@ import (
 const (
 	sopsDir = "/run/sops"
 
-	annotationPrefix = "com.greboid.secrets."
+	annotationPrefix = "g5d.dev/runcage/"
 	annotationKeys   = annotationPrefix + "keys"
 	annotationOwner  = annotationPrefix + "owner"
 
