@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"filippo.io/age"
+	"go.yaml.in/yaml/v4"
 )
 
 func newIdentity(t *testing.T) *age.X25519Identity {
@@ -109,5 +110,101 @@ func TestRekey(t *testing.T) {
 	}
 	if _, _, err := Rekey(doc, ids, []string{"age1bad"}, nil, DefaultLimits); err == nil {
 		t.Fatal("invalid recipient accepted")
+	}
+}
+
+func TestRekeyRejectsUnencrypted(t *testing.T) {
+	doc := strings.Replace(string(fixture(t, "valid.age.yaml")), "sops:", "x_unencrypted: \"\"\nsops:", 1)
+	r := newIdentity(t).Recipient().String()
+	if _, _, err := Rekey([]byte(doc), identities(t, "identity-test.txt"), []string{r}, nil, DefaultLimits); err == nil || !strings.Contains(err.Error(), "not encrypted") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestRekeyKeepsVersion(t *testing.T) {
+	a := newIdentity(t)
+	doc, err := Encrypt([]byte("a: b\n"), []*age.X25519Recipient{a.Recipient()}, DefaultLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc = []byte(strings.Replace(string(doc), "    version: "+formatVersion+"\n", "", 1))
+	out, _, err := Rekey(doc, []age.Identity{a}, []string{newIdentity(t).Recipient().String()}, nil, DefaultLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "version") {
+		t.Fatalf("version added:\n%s", out)
+	}
+}
+
+// A label that does not match its stanza is rewrapped to the label.
+func TestRekeyRewrapsStanzas(t *testing.T) {
+	a, b, c := newIdentity(t), newIdentity(t), newIdentity(t)
+	doc, err := Encrypt([]byte("a: b\n"), []*age.X25519Recipient{a.Recipient()}, DefaultLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc = []byte(strings.Replace(string(doc), a.Recipient().String(), b.Recipient().String(), 1))
+	out, changed, err := Rekey(doc, []age.Identity{a}, []string{c.Recipient().String()}, nil, DefaultLimits)
+	if err != nil || !changed {
+		t.Fatalf("%v %v", changed, err)
+	}
+	if _, err := Decrypt(out, []age.Identity{a}, DefaultLimits); err == nil {
+		t.Error("unlabelled key still decrypts")
+	}
+	for _, id := range []age.Identity{b, c} {
+		if _, err := Decrypt(out, []age.Identity{id}, DefaultLimits); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+func TestRekeyRotatesComments(t *testing.T) {
+	ids := identities(t, "identity-test.txt")
+	have, err := Recipients(fixture(t, "valid.age.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := strings.Replace(string(fixture(t, "valid.age.yaml")), "sops:", "# plain\n#ENC[AES256_GCM,data:AAAA,iv:"+strings.Repeat("A", 43)+"=,tag:"+strings.Repeat("A", 22)+"==,type:comment]\nsops:", 1)
+	other := newIdentity(t)
+	out, _, err := Rekey([]byte(doc), ids, []string{other.Recipient().String()}, have, DefaultLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := parseEncrypted(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := d.unwrap([]age.Identity{other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	var walk func(n *yaml.Node)
+	walk = func(n *yaml.Node) {
+		for _, c := range []string{n.HeadComment, n.LineComment, n.FootComment} {
+			for line := range strings.SplitSeq(c, "\n") {
+				if line == "" {
+					continue
+				}
+				enc, ok := parseEnc(strings.TrimPrefix(line, "#"))
+				if !ok || enc.typ != "comment" {
+					t.Fatalf("comment not encrypted: %q", line)
+				}
+				pt, err := enc.open(key, commentAAD)
+				if err != nil {
+					t.Fatalf("comment not under new key: %q", line)
+				}
+				got = append(got, string(pt))
+			}
+		}
+		for _, c := range n.Content {
+			walk(c)
+		}
+	}
+	walk(d.root)
+	want := []string{" compose-sops test document", " plain", "ENC[AES256_GCM,data:AAAA,iv:" + strings.Repeat("A", 43) + "=,tag:" + strings.Repeat("A", 22) + "==,type:comment]"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %q", got)
 	}
 }

@@ -71,16 +71,11 @@ func Decrypt(encrypted []byte, identities []age.Identity, limits Limits) ([]Secr
 	if err != nil {
 		return nil, err
 	}
-	// The MAC does not bind unencrypted values to their names.
-	for _, e := range d.entries {
-		if e.plain {
-			return nil, fmt.Errorf("secret %q is not encrypted (name ends with %q)", e.name, d.meta.unencryptedSuffix())
-		}
-	}
 	dataKey, err := d.unwrap(identities)
 	if err != nil {
 		return nil, errors.New("data key recovery failed: the age identity cannot decrypt this document")
 	}
+	defer clear(dataKey)
 	values, err := d.open(dataKey)
 	if err != nil {
 		return nil, err
@@ -97,7 +92,8 @@ func ReadDocument(path string) ([]byte, error) {
 }
 
 func ReadBounded(path string, limit int64, noFollow bool) ([]byte, error) {
-	flags := unix.O_RDONLY | unix.O_CLOEXEC
+	// O_NONBLOCK: opening a FIFO would otherwise block before the type check.
+	flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NONBLOCK
 	if noFollow {
 		flags |= unix.O_NOFOLLOW
 	}

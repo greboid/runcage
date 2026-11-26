@@ -341,15 +341,15 @@ func metadataNode(m metadata) *yaml.Node {
 	if m.suffix != "" {
 		out.Content = append(out.Content, str("unencrypted_suffix"), str(m.suffix))
 	}
-	out.Content = append(out.Content, str("version"), str(m.version))
+	if m.version != "" {
+		out.Content = append(out.Content, str("version"), str(m.version))
+	}
 	return out
 }
 
-// plain: the name has the unencrypted suffix.
 type entry struct {
 	name  string
 	value *yaml.Node
-	plain bool
 }
 
 type document struct {
@@ -448,8 +448,12 @@ func flatEntries(body *yaml.Node, encrypted bool, suffix string) ([]entry, int, 
 		if _, ok := stringScalar(v); !ok {
 			return nil, 0, nonString(name, valueTypeName(v))
 		}
-		e := entry{name: name, value: v, plain: encrypted && strings.HasSuffix(name, suffix)}
-		if encrypted && !e.plain && v.Value != "" {
+		// The MAC does not bind unencrypted values to their names.
+		if encrypted && strings.HasSuffix(name, suffix) {
+			return nil, 0, fmt.Errorf("secret %q is not encrypted (name ends with %q)", name, suffix)
+		}
+		e := entry{name: name, value: v}
+		if encrypted && v.Value != "" {
 			enc, ok := parseEnc(v.Value)
 			if !ok {
 				return nil, 0, fmt.Errorf("secret %q is not a SOPS-encrypted value", name)
@@ -510,7 +514,7 @@ func (d *document) unwrap(identities []age.Identity) ([]byte, error) {
 func (d *document) open(dataKey []byte) ([]string, error) {
 	values := make([]string, 0, len(d.entries))
 	for _, e := range d.entries {
-		if e.plain || e.value.Value == "" {
+		if e.value.Value == "" {
 			values = append(values, e.value.Value)
 			continue
 		}
@@ -520,6 +524,7 @@ func (d *document) open(dataKey []byte) ([]string, error) {
 			return nil, errDecrypt
 		}
 		values = append(values, string(pt))
+		clear(pt)
 	}
 	stored, ok := parseEnc(d.meta.mac)
 	if !ok || stored.typ != "str" {
@@ -534,9 +539,6 @@ func (d *document) open(dataKey []byte) ([]string, error) {
 
 func (d *document) seal(dataKey []byte, values []string) error {
 	for i, e := range d.entries {
-		if e.plain {
-			continue
-		}
 		enc, err := seal(dataKey, values[i], e.name+":", "str")
 		if err != nil {
 			return fmt.Errorf("cannot encrypt document values: %w", err)
@@ -555,23 +557,24 @@ func (d *document) seal(dataKey []byte, values []string) error {
 	return nil
 }
 
-// Comments that are not encrypted, or do not open with oldKey, are kept as is.
-func reencryptComments(n *yaml.Node, oldKey, newKey []byte) error {
+// As SOPS does, a comment that does not open with oldKey is taken as plaintext.
+func rotateComments(n *yaml.Node, oldKey, newKey []byte) error {
 	for _, c := range []*string{&n.HeadComment, &n.LineComment, &n.FootComment} {
 		if *c == "" {
 			continue
 		}
 		lines := strings.Split(*c, "\n")
 		for i, line := range lines {
-			enc, ok := parseEnc(strings.TrimPrefix(line, "#"))
-			if !ok || !strings.HasPrefix(line, "#") || enc.typ != "comment" {
+			text, ok := strings.CutPrefix(line, "#")
+			if !ok {
 				continue
 			}
-			pt, err := enc.open(oldKey, commentAAD)
-			if err != nil {
-				continue
+			if enc, ok := parseEnc(text); ok && enc.typ == "comment" {
+				if pt, err := enc.open(oldKey, commentAAD); err == nil {
+					text = string(pt)
+				}
 			}
-			out, err := seal(newKey, string(pt), commentAAD, "comment")
+			out, err := seal(newKey, text, commentAAD, "comment")
 			if err != nil {
 				return fmt.Errorf("cannot encrypt comment: %w", err)
 			}
@@ -580,7 +583,7 @@ func reencryptComments(n *yaml.Node, oldKey, newKey []byte) error {
 		*c = strings.Join(lines, "\n")
 	}
 	for _, child := range n.Content {
-		if err := reencryptComments(child, oldKey, newKey); err != nil {
+		if err := rotateComments(child, oldKey, newKey); err != nil {
 			return err
 		}
 	}

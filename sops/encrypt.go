@@ -53,6 +53,7 @@ func Encrypt(plaintext []byte, recipients []*age.X25519Recipient, limits Limits)
 	if err != nil {
 		return nil, err
 	}
+	defer clear(dataKey)
 	names := make([]string, len(recipients))
 	for i, r := range recipients {
 		names[i] = r.String()
@@ -75,7 +76,9 @@ func Recipients(encrypted []byte) ([]string, error) {
 }
 
 // Removing rotates the data key. An unchanged document is returned as is
-// with false, without needing identities.
+// with false, without needing identities. Otherwise every stanza is rewrapped,
+// since a stanza cannot be checked against its recipient label. The unchanged
+// path trusts the labels.
 func Rekey(encrypted []byte, identities []age.Identity, add, remove []string, limits Limits) ([]byte, bool, error) {
 	for _, r := range slices.Concat(add, remove) {
 		if _, err := age.ParseX25519Recipient(r); err != nil {
@@ -86,16 +89,21 @@ func Rekey(encrypted []byte, identities []age.Identity, add, remove []string, li
 	if err != nil {
 		return nil, false, err
 	}
-	have := d.meta.recipients()
-	var missing []string
-	for _, r := range add {
-		if !slices.Contains(have, r) && !slices.Contains(missing, r) && !slices.Contains(remove, r) {
-			missing = append(missing, r)
+	var keep []string
+	drop := false
+	for _, r := range slices.Concat(d.meta.recipients(), add) {
+		switch {
+		case slices.Contains(remove, r):
+			drop = drop || slices.Contains(d.meta.recipients(), r)
+		case !slices.Contains(keep, r):
+			keep = append(keep, r)
 		}
 	}
-	drop := slices.ContainsFunc(have, func(r string) bool { return slices.Contains(remove, r) })
-	if len(missing) == 0 && !drop {
+	if !drop && len(keep) == len(d.meta.age) {
 		return encrypted, false, nil
+	}
+	if len(keep) == 0 {
+		return nil, false, errors.New("removing every recipient would leave the document undecryptable")
 	}
 	if len(identities) == 0 {
 		return nil, false, ErrIdentityRequired
@@ -104,6 +112,7 @@ func Rekey(encrypted []byte, identities []age.Identity, add, remove []string, li
 	if err != nil {
 		return nil, false, errors.New("data key recovery failed: the age identity cannot decrypt this document")
 	}
+	defer clear(dataKey)
 	values, err := d.open(dataKey)
 	if err != nil {
 		return nil, false, err
@@ -111,33 +120,23 @@ func Rekey(encrypted []byte, identities []age.Identity, add, remove []string, li
 	if err := ValidateFlat(d.secrets(values), limits); err != nil {
 		return nil, false, fmt.Errorf("decrypted document rejected: %w", err)
 	}
-
-	if !drop {
-		stanzas, err := wrapDataKeyFor(dataKey, missing)
-		if err != nil {
-			return nil, false, err
-		}
-		d.meta.age = append(d.meta.age, stanzas...)
-	} else {
-		keep := slices.DeleteFunc(slices.Concat(have, missing), func(r string) bool { return slices.Contains(remove, r) })
-		if len(keep) == 0 {
-			return nil, false, errors.New("removing every recipient would leave the document undecryptable")
-		}
+	key := dataKey
+	if drop {
 		newKey, err := newDataKey()
 		if err != nil {
 			return nil, false, err
 		}
-		stanzas, err := wrapDataKeyFor(newKey, keep)
-		if err != nil {
-			return nil, false, err
-		}
-		if err := reencryptComments(d.root, dataKey, newKey); err != nil {
+		defer clear(newKey)
+		if err := rotateComments(d.root, dataKey, newKey); err != nil {
 			return nil, false, err
 		}
 		if err := d.seal(newKey, values); err != nil {
 			return nil, false, err
 		}
-		d.meta.age = stanzas
+		key = newKey
+	}
+	if d.meta.age, err = wrapDataKeyFor(key, keep); err != nil {
+		return nil, false, err
 	}
 	out, err := d.emit()
 	if err != nil {

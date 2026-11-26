@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"filippo.io/age"
+	"golang.org/x/sys/unix"
 )
 
 // testdata was encrypted by the sops CLI.
@@ -120,5 +121,15 @@ func TestReadBounded(t *testing.T) {
 	}
 	if _, err := ReadBounded(dir, 5, false); err == nil {
 		t.Error("directory accepted")
+	}
+}
+
+func TestReadBoundedFIFO(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fifo")
+	if err := unix.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadBounded(path, 5, false); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("got %v", err)
 	}
 }
