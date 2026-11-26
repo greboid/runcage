@@ -11,8 +11,8 @@ import (
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/sys/unix"
 
-	"g5d.dev/runcage/internal/identity"
-	"g5d.dev/runcage/internal/sops"
+	"g5d.dev/runcage/identity"
+	"g5d.dev/runcage/sops"
 )
 
 const maxStateSize = 1 << 20

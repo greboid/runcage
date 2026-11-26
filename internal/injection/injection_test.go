@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"g5d.dev/runcage/internal/identity"
+	"g5d.dev/runcage/identity"
 )
 
 func TestParamsRoundTrip(t *testing.T) {
@@ -143,7 +143,7 @@ func TestOpenRootfs(t *testing.T) {
 }
 
 func TestLoadSOPS(t *testing.T) {
-	testdata := filepath.Join("..", "sops", "testdata")
+	testdata := filepath.Join("..", "..", "sops", "testdata")
 	t.Cleanup(func() { IdentitySource = identity.DefaultSource })
 	key, err := os.ReadFile(filepath.Join(testdata, "identity-test.txt"))
 	if err != nil {

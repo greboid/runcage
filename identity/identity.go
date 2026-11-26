@@ -12,7 +12,7 @@ import (
 	"filippo.io/age"
 	"golang.org/x/sys/unix"
 
-	"g5d.dev/runcage/internal/sops"
+	"g5d.dev/runcage/sops"
 )
 
 const (
@@ -133,4 +133,14 @@ func readMessage(path string, err error) string {
 		return fmt.Sprintf("%s: %s", path, perr.Err.Error())
 	}
 	return err.Error()
+}
+
+func Recipients(ids []age.Identity) []string {
+	var out []string
+	for _, id := range ids {
+		if x, ok := id.(*age.X25519Identity); ok {
+			out = append(out, x.Recipient().String())
+		}
+	}
+	return out
 }

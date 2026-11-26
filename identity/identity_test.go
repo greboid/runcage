@@ -143,3 +143,14 @@ func TestCredsErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestRecipients(t *testing.T) {
+	ids, err := Parse(testdata(t, "identity-test.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := Recipients(ids)
+	if len(r) != 1 || !strings.HasPrefix(r[0], "age1") {
+		t.Fatalf("got %v", r)
+	}
+}

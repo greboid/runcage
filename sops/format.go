@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha512"
 	"crypto/subtle"
 	"encoding/base64"
@@ -22,11 +23,15 @@ import (
 )
 
 const (
+	// The SOPS release whose format this writes.
+	formatVersion            = "3.13.3"
 	sopsMetadataKey          = "sops"
 	defaultUnencryptedSuffix = "_unencrypted"
 	nonceSize                = 32
 	tagSize                  = 16
 	dataKeySize              = 32
+	// SOPS's additional data for comments.
+	commentAAD = ":"
 )
 
 var encPattern = regexp.MustCompile(`^ENC\[AES256_GCM,data:([A-Za-z0-9+/=]*),iv:([A-Za-z0-9+/=]+),tag:([A-Za-z0-9+/=]+),type:([a-z]+)\]$`)
@@ -69,16 +74,39 @@ func parseEnc(s string) (*encValue, bool) {
 	return &v, true
 }
 
-func (v *encValue) open(key []byte, aad string) ([]byte, error) {
+func newGCM(key []byte) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
-	gcm, err := cipher.NewGCMWithNonceSize(block, nonceSize)
+	return cipher.NewGCMWithNonceSize(block, nonceSize)
+}
+
+func (v *encValue) open(key []byte, aad string) ([]byte, error) {
+	gcm, err := newGCM(key)
 	if err != nil {
 		return nil, err
 	}
 	return gcm.Open(nil, v.iv, append(bytes.Clone(v.data), v.tag...), []byte(aad))
+}
+
+// Empty plaintext is stored empty, as SOPS does; the MAC covers it.
+func seal(key []byte, plaintext, aad, typ string) (string, error) {
+	if plaintext == "" {
+		return "", nil
+	}
+	gcm, err := newGCM(key)
+	if err != nil {
+		return "", err
+	}
+	iv := make([]byte, nonceSize)
+	if _, err := rand.Read(iv); err != nil {
+		return "", err
+	}
+	out := gcm.Seal(nil, iv, []byte(plaintext), []byte(aad))
+	enc := base64.StdEncoding.EncodeToString
+	return fmt.Sprintf("ENC[AES256_GCM,data:%s,iv:%s,tag:%s,type:%s]",
+		enc(out[:len(out)-tagSize]), enc(iv), enc(out[len(out)-tagSize:]), typ), nil
 }
 
 // SHA-512 over all values in document order.
@@ -94,12 +122,56 @@ type ageStanza struct {
 	recipient, enc string
 }
 
+func wrapDataKey(dataKey []byte, recipient string) (ageStanza, error) {
+	r, err := age.ParseX25519Recipient(recipient)
+	if err != nil {
+		return ageStanza{}, fmt.Errorf("invalid age recipient %q", recipient)
+	}
+	var buf bytes.Buffer
+	aw := armor.NewWriter(&buf)
+	w, err := age.Encrypt(aw, r)
+	if err != nil {
+		return ageStanza{}, fmt.Errorf("cannot encrypt data key for an age recipient: %w", err)
+	}
+	if _, err := w.Write(dataKey); err != nil {
+		return ageStanza{}, fmt.Errorf("cannot encrypt data key for an age recipient: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return ageStanza{}, fmt.Errorf("cannot encrypt data key for an age recipient: %w", err)
+	}
+	if err := aw.Close(); err != nil {
+		return ageStanza{}, fmt.Errorf("cannot encrypt data key for an age recipient: %w", err)
+	}
+	return ageStanza{recipient: recipient, enc: buf.String()}, nil
+}
+
+func wrapDataKeyFor(dataKey []byte, recipients []string) ([]ageStanza, error) {
+	stanzas := make([]ageStanza, 0, len(recipients))
+	for _, r := range recipients {
+		s, err := wrapDataKey(dataKey, r)
+		if err != nil {
+			return nil, err
+		}
+		stanzas = append(stanzas, s)
+	}
+	return stanzas, nil
+}
+
+func newDataKey() ([]byte, error) {
+	key := make([]byte, dataKeySize)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("cannot generate data key: %w", err)
+	}
+	return key, nil
+}
+
 type metadata struct {
 	age          []ageStanza
 	lastModified string
 	mac          string
 	// Empty means the default.
-	suffix string
+	suffix  string
+	version string
 }
 
 func (m *metadata) unencryptedSuffix() string {
@@ -107,6 +179,14 @@ func (m *metadata) unencryptedSuffix() string {
 		return defaultUnencryptedSuffix
 	}
 	return m.suffix
+}
+
+func (m *metadata) recipients() []string {
+	out := make([]string, 0, len(m.age))
+	for _, s := range m.age {
+		out = append(out, s.recipient)
+	}
+	return out
 }
 
 // SOPS authenticates lastmodified re-formatted.
@@ -182,7 +262,7 @@ func parseMetadata(n *yaml.Node) (metadata, error) {
 				return m, fmt.Errorf("SOPS metadata unencrypted_suffix is not a string")
 			}
 		case name == "version":
-			if _, ok = stringScalar(v); !ok {
+			if m.version, ok = stringScalar(v); !ok {
 				return m, fmt.Errorf("SOPS metadata version is not a string")
 			}
 		case emptyKeyFields[name]:
@@ -241,6 +321,30 @@ func parseAgeStanzas(n *yaml.Node) ([]ageStanza, error) {
 	return out, nil
 }
 
+func metadataNode(m metadata) *yaml.Node {
+	str := func(s string) *yaml.Node { return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s} }
+	ages := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	for _, s := range m.age {
+		enc := str(s.enc)
+		enc.Style = yaml.LiteralStyle
+		ages.Content = append(ages.Content, &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
+			str("enc"), enc, str("recipient"), str(s.recipient),
+		}})
+	}
+	lastModified := str(m.lastModified)
+	lastModified.Style = yaml.DoubleQuotedStyle
+	out := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
+		str("age"), ages,
+		str("lastmodified"), lastModified,
+		str("mac"), str(m.mac),
+	}}
+	if m.suffix != "" {
+		out.Content = append(out.Content, str("unencrypted_suffix"), str(m.suffix))
+	}
+	out.Content = append(out.Content, str("version"), str(m.version))
+	return out
+}
+
 // plain: the name has the unencrypted suffix.
 type entry struct {
 	name  string
@@ -249,6 +353,10 @@ type entry struct {
 }
 
 type document struct {
+	root *yaml.Node
+	body *yaml.Node
+	// Index of the sops key in body.Content, or -1.
+	sopsAt  int
 	meta    metadata
 	entries []entry
 }
@@ -314,41 +422,45 @@ func nonString(name, kind string) error {
 	return fmt.Errorf("secret %q has a %s value; all values must be YAML strings (quote the value)", name, kind)
 }
 
-func flatEntries(body *yaml.Node, suffix string) ([]entry, error) {
-	sopsSeen := false
+// When encrypted, the sops key's index is returned and values must be SOPS strings.
+func flatEntries(body *yaml.Node, encrypted bool, suffix string) ([]entry, int, error) {
+	sopsAt := -1
 	var entries []entry
 	for i := 0; i+1 < len(body.Content); i += 2 {
 		k, v := body.Content[i], body.Content[i+1]
 		name, ok := stringScalar(k)
 		if !ok {
-			return nil, fmt.Errorf("secret names must be strings")
+			return nil, 0, fmt.Errorf("secret names must be strings")
 		}
 		if name == sopsMetadataKey {
-			if sopsSeen {
-				return nil, fmt.Errorf("document has more than one %q key", sopsMetadataKey)
+			if !encrypted {
+				return nil, 0, fmt.Errorf("input already contains a %q top-level key and appears to be SOPS-encrypted", sopsMetadataKey)
 			}
-			sopsSeen = true
+			if sopsAt >= 0 {
+				return nil, 0, fmt.Errorf("document has more than one %q key", sopsMetadataKey)
+			}
+			sopsAt = i
 			continue
 		}
 		if !namePattern.MatchString(name) {
-			return nil, invalidName(name)
+			return nil, 0, invalidName(name)
 		}
 		if _, ok := stringScalar(v); !ok {
-			return nil, nonString(name, valueTypeName(v))
+			return nil, 0, nonString(name, valueTypeName(v))
 		}
-		e := entry{name: name, value: v, plain: strings.HasSuffix(name, suffix)}
-		if !e.plain && v.Value != "" {
+		e := entry{name: name, value: v, plain: encrypted && strings.HasSuffix(name, suffix)}
+		if encrypted && !e.plain && v.Value != "" {
 			enc, ok := parseEnc(v.Value)
 			if !ok {
-				return nil, fmt.Errorf("secret %q is not a SOPS-encrypted value", name)
+				return nil, 0, fmt.Errorf("secret %q is not a SOPS-encrypted value", name)
 			}
 			if enc.typ != "str" {
-				return nil, nonString(name, encTypeName(enc.typ))
+				return nil, 0, nonString(name, encTypeName(enc.typ))
 			}
 		}
 		entries = append(entries, e)
 	}
-	return entries, nil
+	return entries, sopsAt, nil
 }
 
 func parseEncrypted(b []byte) (*document, error) {
@@ -370,11 +482,11 @@ func parseEncrypted(b []byte) (*document, error) {
 	if !found {
 		return nil, fmt.Errorf("not a valid SOPS-encrypted YAML document (%d bytes): no %q metadata", len(b), sopsMetadataKey)
 	}
-	entries, err := flatEntries(body, meta.unencryptedSuffix())
+	entries, sopsAt, err := flatEntries(body, true, meta.unencryptedSuffix())
 	if err != nil {
 		return nil, fmt.Errorf("document rejected: %w", err)
 	}
-	return &document{meta: meta, entries: entries}, nil
+	return &document{root: root, body: body, sopsAt: sopsAt, meta: meta, entries: entries}, nil
 }
 
 func (d *document) unwrap(identities []age.Identity) ([]byte, error) {
@@ -418,6 +530,82 @@ func (d *document) open(dataKey []byte) ([]string, error) {
 		return nil, errMAC
 	}
 	return values, nil
+}
+
+func (d *document) seal(dataKey []byte, values []string) error {
+	for i, e := range d.entries {
+		if e.plain {
+			continue
+		}
+		enc, err := seal(dataKey, values[i], e.name+":", "str")
+		if err != nil {
+			return fmt.Errorf("cannot encrypt document values: %w", err)
+		}
+		e.value.Value = enc
+		e.value.Tag = "!!str"
+		e.value.Style = 0
+	}
+	d.meta.lastModified = time.Now().UTC().Format(time.RFC3339)
+	d.meta.version = formatVersion
+	mac, err := seal(dataKey, macOf(values), d.meta.macAAD(), "str")
+	if err != nil {
+		return fmt.Errorf("cannot encrypt document MAC: %w", err)
+	}
+	d.meta.mac = mac
+	return nil
+}
+
+// Comments that are not encrypted, or do not open with oldKey, are kept as is.
+func reencryptComments(n *yaml.Node, oldKey, newKey []byte) error {
+	for _, c := range []*string{&n.HeadComment, &n.LineComment, &n.FootComment} {
+		if *c == "" {
+			continue
+		}
+		lines := strings.Split(*c, "\n")
+		for i, line := range lines {
+			enc, ok := parseEnc(strings.TrimPrefix(line, "#"))
+			if !ok || !strings.HasPrefix(line, "#") || enc.typ != "comment" {
+				continue
+			}
+			pt, err := enc.open(oldKey, commentAAD)
+			if err != nil {
+				continue
+			}
+			out, err := seal(newKey, string(pt), commentAAD, "comment")
+			if err != nil {
+				return fmt.Errorf("cannot encrypt comment: %w", err)
+			}
+			lines[i] = "#" + out
+		}
+		*c = strings.Join(lines, "\n")
+	}
+	for _, child := range n.Content {
+		if err := reencryptComments(child, oldKey, newKey); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *document) emit() ([]byte, error) {
+	meta := metadataNode(d.meta)
+	if d.sopsAt >= 0 {
+		d.body.Content[d.sopsAt+1] = meta
+	} else {
+		key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: sopsMetadataKey}
+		d.body.Content = append(d.body.Content, key, meta)
+		d.sopsAt = len(d.body.Content) - 2
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(4)
+	if err := enc.Encode(d.root); err != nil {
+		return nil, fmt.Errorf("cannot serialize encrypted document: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("cannot serialize encrypted document: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 func (d *document) secrets(values []string) []Secret {
