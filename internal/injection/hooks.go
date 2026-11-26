@@ -58,12 +58,20 @@ func Main(args []string, stdin io.Reader, stderr io.Writer) int {
 	return 0
 }
 
+// ONFAULT: without it MCL_FUTURE populates every new Go heap mapping.
+var lockMemory = func() error {
+	return unix.Mlockall(unix.MCL_CURRENT | unix.MCL_FUTURE | unix.MCL_ONFAULT)
+}
+
 func run(args []string, stdin io.Reader) error {
 	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
 		return fmt.Errorf("disable hook dumpability: %w", err)
 	}
 	if err := unix.Setrlimit(unix.RLIMIT_CORE, &unix.Rlimit{Cur: 0, Max: 0}); err != nil {
 		return fmt.Errorf("disable hook core dumps: %w", err)
+	}
+	if err := lockMemory(); err != nil {
+		return fmt.Errorf("lock hook memory: %w", err)
 	}
 	var err error
 	doSecret(func() { err = runInjection(args, stdin) })

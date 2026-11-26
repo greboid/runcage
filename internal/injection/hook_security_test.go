@@ -28,6 +28,32 @@ func TestHookDisablesCoreDumps(t *testing.T) {
 	})
 }
 
+func TestHookLocksMemory(t *testing.T) {
+	checkAtDocumentLoad(t, func() {
+		if !memoryLocked {
+			t.Fatal("memory not locked before loading secrets")
+		}
+		if os.Geteuid() != 0 {
+			return
+		}
+		status, err := os.ReadFile("/proc/self/status")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for line := range strings.SplitSeq(string(status), "\n") {
+			if v, ok := strings.CutPrefix(line, "VmLck:"); ok {
+				if strings.TrimSpace(v) == "0 kB" {
+					t.Fatal("VmLck is 0 after mlockall")
+				}
+				return
+			}
+		}
+		t.Fatal("no VmLck in /proc/self/status")
+	})
+}
+
+var memoryLocked bool
+
 // The hard core limit cannot be restored by an unprivileged test process.
 func checkAtDocumentLoad(t *testing.T, check func()) {
 	t.Helper()
@@ -39,6 +65,15 @@ func checkAtDocumentLoad(t *testing.T, check func()) {
 			t.Fatalf("hook subprocess: %v\n%s", err, out)
 		}
 		return
+	}
+	// Without CAP_IPC_LOCK, mlockall exceeds RLIMIT_MEMLOCK.
+	realLock := lockMemory
+	lockMemory = func() error {
+		memoryLocked = true
+		if os.Geteuid() != 0 {
+			return nil
+		}
+		return realLock()
 	}
 	stop := errors.New("stop before reading any secrets")
 	LoadDocument = func(string) (map[string][]byte, error) {

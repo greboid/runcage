@@ -214,14 +214,15 @@ with `runcage: <reason>`. Common reasons:
 - Anyone with access to the Docker socket, or root on the host, can read the
   secrets, for example with `docker exec`.
 - Before reading an identity or document, the hook disables kernel core dumps
-  (`PR_SET_DUMPABLE=0` and both `RLIMIT_CORE` limits zero). If either call
-  fails, startup stops. These settings apply to the hook, not the application.
+  (`PR_SET_DUMPABLE=0` and both `RLIMIT_CORE` limits zero) and locks its
+  memory (`mlockall` with `MCL_CURRENT|MCL_FUTURE|MCL_ONFAULT`), so the age
+  identity, data key and plaintext are not swapped. If any call fails, startup
+  stops. These settings apply to the hook, not the application.
 - The [recommended build](install.md#binary-and-runtime) uses Go's experimental
   `runtime/secret.Do` on Linux amd64 and arm64. It clears temporary stack and
   register data on return; unreachable heap data is cleared when collected,
-  not necessarily before hook exit. It does not lock memory. `noswap` protects
-  the files on tmpfs, not the host hook's age identity, data key or plaintext
-  heap. Host swap and hibernation can persist that memory.
+  not necessarily before hook exit.
+- Locked memory is still written to disk by hibernation.
 - The application can still expose the values through its own core dumps,
   swap or anything it writes out.
 - Key names, recipients and other SOPS metadata are not encrypted.
