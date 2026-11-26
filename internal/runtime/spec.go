@@ -115,14 +115,10 @@ func Rewrite(data []byte, bundle, self string, stat StatFunc) ([]byte, bool, err
 		return nil, false, err
 	}
 	if marker < 0 {
-		classification := secretsAbsent
-		if hasSecretArtifacts(mounts, hooks) || markedSecrets(annotations) {
-			classification = secretsPresent
-		}
-		if annotations[annotationSecrets] == classification {
+		if !hasSecretArtifacts(mounts, hooks) || annotations[annotationSecrets] == secretsPresent {
 			return data, false, nil
 		}
-		return stampConfig(raw, annotations, classification)
+		return stampConfig(raw, annotations, secretsPresent)
 	}
 	if hasSecretHooks(hooks) {
 		return nil, false, errors.New("config already has secret hooks and a SOPS document")
@@ -310,8 +306,7 @@ func under(p, dir string) bool {
 	return p == dir || strings.HasPrefix(p, dir+"/")
 }
 
-// runc decodes into a struct (case-insensitive), whereas editing raw fields is
-// case-sensitive. Reject ambiguous fields rather than classifying a different spec.
+// runc matches field names case-insensitively; reject variants it could read differently.
 func configFields(data []byte) (map[string]json.RawMessage, error) {
 	d := json.NewDecoder(bytes.NewReader(data))
 	if tok, err := d.Token(); err != nil || tok != json.Delim('{') {

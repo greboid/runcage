@@ -122,8 +122,8 @@ Set the owner when the container starts as root and its entrypoint drops to
 another user: by default the files are owned by root and the dropped user
 cannot read them.
 
-`g5d.dev/runcage/secrets` is reserved for the runtime. Do not set it in
-Compose. No other `g5d.dev/runcage/*` service options are supported.
+`g5d.dev/runcage/secrets` is set by the runtime. Any other
+`g5d.dev/runcage/*` annotation is an error.
 
 ## Sharing a document
 
@@ -201,28 +201,20 @@ with `runcage: <reason>`. Common reasons:
 ## Limits
 
 - At most 512 keys per container, 64 KiB per value and 1 MiB in total.
-- `docker checkpoint` is allowed only when runc's saved state identifies the
-  container as created or restored **without secrets** by Run cage. A container
-  created before this classification was introduced must be recreated before
-  it can be checkpointed, even if it never used secrets.
-- Restore refuses bundles with secret hooks, a SOPS marker, or a `noswap`
-  tmpfs at `/run/secrets`. Only restore trusted checkpoint images: the check
-  classifies the bundle, not the contents of a CRIU image. Keep bundles under
-  runtime control and serialize lifecycle operations on the same container ID.
-- For checkpoint and restore, put options before the single container ID.
-  Unknown options or an ambiguous target are refused.
+- Checkpoint and restore are refused for containers with secrets. Containers
+  created by v0.2.0 or earlier are only checked through their bundle; recreate
+  them. Restore checks the bundle, not the checkpoint image, so only restore
+  trusted images.
+- Checkpoint and restore refuse unknown options and options after the
+  container ID.
 - Anyone with access to the Docker socket, or root on the host, can read the
   secrets, for example with `docker exec`.
-- Before reading an identity or document, the hook disables kernel core dumps
-  (`PR_SET_DUMPABLE=0` and both `RLIMIT_CORE` limits zero) and locks its
-  memory (`mlockall` with `MCL_CURRENT|MCL_FUTURE|MCL_ONFAULT`), so the age
-  identity, data key and plaintext are not swapped. If any call fails, startup
-  stops. These settings apply to the hook, not the application.
-- The [recommended build](install.md#binary-and-runtime) uses Go's experimental
-  `runtime/secret.Do` on Linux amd64 and arm64. It clears temporary stack and
-  register data on return; unreachable heap data is cleared when collected,
-  not necessarily before hook exit.
-- Locked memory is still written to disk by hibernation.
+- The hook disables core dumps and locks its memory before reading the
+  identity or document, and fails if it cannot. Hibernation still writes its
+  memory to disk.
+- Built with `GOEXPERIMENT=runtimesecret` (Linux amd64 and arm64), the hook
+  also erases its stack and registers on return; freed heap is erased when
+  collected.
 - The application can still expose the values through its own core dumps,
-  swap or anything it writes out.
+  swap or output.
 - Key names, recipients and other SOPS metadata are not encrypted.

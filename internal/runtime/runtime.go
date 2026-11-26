@@ -70,19 +70,42 @@ func refuseCheckpoint(runc string, inv Invocation) error {
 func checkpointState(out []byte, id string) error {
 	var state struct {
 		ID          string            `json:"id"`
+		Bundle      string            `json:"bundle"`
 		Annotations map[string]string `json:"annotations"`
 	}
 	if err := json.Unmarshal(out, &state); err != nil || state.ID != id {
 		return errors.New("cannot verify checkpoint target in runc state")
 	}
-	switch state.Annotations[annotationSecrets] {
-	case secretsAbsent:
+	class, ok := state.Annotations[annotationSecrets]
+	switch {
+	case !ok:
+		return checkpointBundle(state.Bundle)
+	case class == secretsAbsent:
 		return nil
-	case secretsPresent:
+	case class == secretsPresent:
 		return errCheckpoint
 	default:
-		return errors.New("checkpoint refused: no recognized creation-time secrets classification; recreate the container with runcage")
+		return fmt.Errorf("checkpoint refused: unrecognized %s annotation %q", annotationSecrets, class)
 	}
+}
+
+// Unstamped: no secrets, or created by v0.2.0 or earlier.
+func checkpointBundle(bundle string) error {
+	if !filepath.IsAbs(bundle) {
+		return errors.New("cannot verify checkpoint target: runc state has no bundle")
+	}
+	data, err := os.ReadFile(filepath.Join(bundle, "config.json"))
+	if err != nil {
+		return fmt.Errorf("cannot read config: %w", err)
+	}
+	has, err := HasSecrets(data)
+	if err != nil {
+		return err
+	}
+	if has {
+		return errCheckpoint
+	}
+	return nil
 }
 
 func FindRunc(self string) (string, error) {

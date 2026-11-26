@@ -52,6 +52,52 @@ func TestCheckpointState(t *testing.T) {
 	}
 }
 
+func TestCheckpointUnstampedBundle(t *testing.T) {
+	prepared, _, err := Rewrite(mustJSON(t, baseConfig(sopsMount("/run/sops/x"))), "/run/bundle", self, fakeStat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy map[string]any
+	if err := json.Unmarshal(prepared, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	delete(legacy, "annotations")
+	for _, tt := range []struct {
+		name   string
+		config []byte
+		allow  bool
+	}{
+		{"plain", mustJSON(t, baseConfig()), true},
+		{"legacy secrets", mustJSON(t, legacy), false},
+		{"missing config", nil, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tt.config != nil {
+				if err := os.WriteFile(filepath.Join(dir, "config.json"), tt.config, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			state := mustJSON(t, map[string]any{"id": "app", "bundle": dir})
+			if err := checkpointState(state, "app"); (err == nil) != tt.allow {
+				t.Errorf("allow=%v, got %v", tt.allow, err)
+			}
+		})
+	}
+	if err := checkpointState(mustJSON(t, map[string]any{"id": "app", "bundle": "rel"}), "app"); err == nil {
+		t.Error("relative bundle accepted")
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 func TestCheckpointQueriesSameRuntimeRoot(t *testing.T) {
 	runc := filepath.Join(t.TempDir(), "runc")
 	script := "#!/bin/sh\n[ \"$#\" = 5 ] && [ \"$1\" = --root ] && [ \"$2\" = /runtime ] && [ \"$3\" = state ] && [ \"$4\" = -- ] && [ \"$5\" = app ] || exit 1\n" +
@@ -104,15 +150,8 @@ func TestRestoreClassification(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tt.refuse {
-				if string(out) != string(data) {
-					t.Fatal("refused restore changed bundle")
-				}
-			} else {
-				var spec struct{ Annotations map[string]string }
-				if err := json.Unmarshal(out, &spec); err != nil || spec.Annotations[annotationSecrets] != secretsAbsent {
-					t.Fatalf("missing restore classification: %v", err)
-				}
+			if string(out) != string(data) {
+				t.Fatal("restore without secrets changed bundle")
 			}
 		})
 	}

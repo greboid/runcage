@@ -73,20 +73,11 @@ func rewrite(t *testing.T, cfg map[string]any) ([]byte, bool, error) {
 	return Rewrite(data, "/run/bundle", self, fakeStat)
 }
 
-func TestRewritePlainClassification(t *testing.T) {
-	cfg := baseConfig()
-	out, changed, err := rewrite(t, cfg)
-	if err != nil || !changed {
-		t.Fatalf("changed=%v err=%v", changed, err)
-	}
-	cfg["annotations"] = map[string]string{annotationSecrets: secretsAbsent}
-	want, _ := json.Marshal(cfg)
-	if string(out) != string(want) {
-		t.Fatal("plain rewrite changed more than the classification")
-	}
-	again, changed, err := Rewrite(out, "/run/bundle", self, fakeStat)
-	if err != nil || changed || string(out) != string(again) {
-		t.Fatalf("plain rewrite not idempotent: changed=%v err=%v", changed, err)
+func TestRewritePlainUnchanged(t *testing.T) {
+	data, _ := json.Marshal(baseConfig())
+	out, changed, err := Rewrite(data, "/run/bundle", self, fakeStat)
+	if err != nil || changed || string(out) != string(data) {
+		t.Fatalf("plain config changed: changed=%v err=%v", changed, err)
 	}
 }
 

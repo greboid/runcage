@@ -58,7 +58,7 @@ func Main(args []string, stdin io.Reader, stderr io.Writer) int {
 	return 0
 }
 
-// ONFAULT: without it MCL_FUTURE populates every new Go heap mapping.
+// Without MCL_ONFAULT, MCL_FUTURE populates every new heap mapping.
 var lockMemory = func() error {
 	return unix.Mlockall(unix.MCL_CURRENT | unix.MCL_FUTURE | unix.MCL_ONFAULT)
 }

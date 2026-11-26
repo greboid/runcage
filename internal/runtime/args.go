@@ -69,7 +69,7 @@ func ParseArgs(args []string) (Invocation, error) {
 			break
 		}
 		if !globalValueFlag(name) && !globalBoolFlag(name) && slices.ContainsFunc(args[i+1:], protectedCommand) {
-			// Its arity is unknown: even the next positional token might be a flag value.
+			// Unknown arity: the next token may be its value.
 			return inv, fmt.Errorf("cannot identify checkpoint/restore command after unknown global option %q", args[i])
 		}
 		if globalValueFlag(name) && !hasValue && i+1 < len(args) {

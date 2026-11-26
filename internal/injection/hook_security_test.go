@@ -54,7 +54,7 @@ func TestHookLocksMemory(t *testing.T) {
 
 var memoryLocked bool
 
-// The hard core limit cannot be restored by an unprivileged test process.
+// Subprocess: an unprivileged process cannot raise the hard core limit again.
 func checkAtDocumentLoad(t *testing.T, check func()) {
 	t.Helper()
 	const child = "RUNCAGE_HOOK_TEST_CHILD"
