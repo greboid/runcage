@@ -1,9 +1,11 @@
 package runtime
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -18,9 +20,12 @@ import (
 const (
 	sopsDir = "/run/sops"
 
-	annotationPrefix = "g5d.dev/runcage/"
-	annotationKeys   = annotationPrefix + "keys"
-	annotationOwner  = annotationPrefix + "owner"
+	annotationPrefix  = "g5d.dev/runcage/"
+	annotationKeys    = annotationPrefix + "keys"
+	annotationOwner   = annotationPrefix + "owner"
+	annotationSecrets = annotationPrefix + "secrets"
+	secretsPresent    = "present"
+	secretsAbsent     = "absent"
 
 	// noswap needs Linux 6.4+.
 	tmpfsOptions = "nosuid,nodev,noexec,mode=0755,size=4m,nr_inodes=1024,noswap"
@@ -32,6 +37,10 @@ const (
 type StatFunc func(string) (os.FileInfo, error)
 
 func PrepareBundle(bundle, self string) error {
+	return prepareBundle(bundle, self, false)
+}
+
+func prepareBundle(bundle, self string, restoring bool) error {
 	if bundle == "" {
 		bundle = "."
 	}
@@ -48,6 +57,15 @@ func PrepareBundle(bundle, self string) error {
 	if err != nil {
 		return fmt.Errorf("cannot read config: %w", err)
 	}
+	if restoring {
+		has, err := HasSecrets(data)
+		if err != nil {
+			return err
+		}
+		if has {
+			return errCheckpoint
+		}
+	}
 	out, changed, err := Rewrite(data, bundle, self, os.Stat)
 	if err != nil {
 		return err
@@ -60,8 +78,8 @@ func PrepareBundle(bundle, self string) error {
 
 // Preserves untouched fields, including unknown ones.
 func Rewrite(data []byte, bundle, self string, stat StatFunc) ([]byte, bool, error) {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
+	raw, err := configFields(data)
+	if err != nil {
 		return nil, false, fmt.Errorf("invalid config: %w", err)
 	}
 	var rawMounts []json.RawMessage
@@ -87,14 +105,26 @@ func Rewrite(data []byte, bundle, self string, stat StatFunc) ([]byte, bool, err
 		return nil, false, err
 	}
 
+	for k := range annotations {
+		if strings.HasPrefix(k, annotationSecrets+"=") {
+			return nil, false, fmt.Errorf("invalid annotation name %q", k)
+		}
+	}
 	marker, err := findMarker(mounts, stat)
 	if err != nil {
 		return nil, false, err
 	}
 	if marker < 0 {
-		return data, false, nil
+		classification := secretsAbsent
+		if hasSecretArtifacts(mounts, hooks) || markedSecrets(annotations) {
+			classification = secretsPresent
+		}
+		if annotations[annotationSecrets] == classification {
+			return data, false, nil
+		}
+		return stampConfig(raw, annotations, classification)
 	}
-	if hasOwnHooks(hooks, self) {
+	if hasSecretHooks(hooks) {
 		return nil, false, errors.New("config already has secret hooks and a SOPS document")
 	}
 
@@ -155,30 +185,43 @@ func Rewrite(data []byte, bundle, self string, stat StatFunc) ([]byte, bool, err
 		return nil, false, err
 	}
 
-	out, err := json.Marshal(raw)
-	if err != nil {
-		return nil, false, err
-	}
-	return out, true, nil
+	return stampConfig(raw, annotations, secretsPresent)
 }
 
-func HasSecrets(data []byte, self string, stat StatFunc) (bool, error) {
+func stampConfig(raw map[string]json.RawMessage, annotations map[string]string, classification string) ([]byte, bool, error) {
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[annotationSecrets] = classification
+	if err := setField(raw, "annotations", annotations); err != nil {
+		return nil, false, err
+	}
+	out, err := json.Marshal(raw)
+	return out, err == nil, err
+}
+
+func markedSecrets(annotations map[string]string) bool {
+	v, ok := annotations[annotationSecrets]
+	return ok && v != secretsAbsent
+}
+
+func HasSecrets(data []byte) (bool, error) {
 	var spec struct {
-		Mounts []specs.Mount `json:"mounts"`
-		Hooks  *specs.Hooks  `json:"hooks"`
+		Mounts      []specs.Mount     `json:"mounts"`
+		Hooks       specs.Hooks       `json:"hooks"`
+		Annotations map[string]string `json:"annotations"`
 	}
 	if err := json.Unmarshal(data, &spec); err != nil {
 		return false, fmt.Errorf("invalid config: %w", err)
 	}
-	if spec.Hooks != nil && hasOwnHooks(*spec.Hooks, self) {
-		return true, nil
-	}
-	for _, m := range spec.Mounts {
-		if under(path.Clean(m.Destination), sopsDir) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return markedSecrets(spec.Annotations) || hasSecretArtifacts(spec.Mounts, spec.Hooks), nil
+}
+
+func hasSecretArtifacts(mounts []specs.Mount, hooks specs.Hooks) bool {
+	return hasSecretHooks(hooks) || slices.ContainsFunc(mounts, func(m specs.Mount) bool {
+		dest := path.Clean(m.Destination)
+		return under(dest, sopsDir) || (dest == injection.SecretsDir && m.Type == "tmpfs" && slices.Contains(m.Options, "noswap"))
+	})
 }
 
 func findMarker(mounts []specs.Mount, stat StatFunc) (int, error) {
@@ -225,7 +268,7 @@ func buildParams(annotations map[string]string, process *specs.Process, source, 
 	}
 	p.Rootfs = filepath.Clean(p.Rootfs)
 	for k := range annotations {
-		if strings.HasPrefix(k, annotationPrefix) && k != annotationKeys && k != annotationOwner {
+		if strings.HasPrefix(k, annotationPrefix) && k != annotationKeys && k != annotationOwner && k != annotationSecrets {
 			return p, fmt.Errorf("unknown annotation %s", k)
 		}
 	}
@@ -251,9 +294,10 @@ func buildParams(annotations map[string]string, process *specs.Process, source, 
 	return p, nil
 }
 
-func hasOwnHooks(h specs.Hooks, self string) bool {
+func hasSecretHooks(h specs.Hooks) bool {
 	own := func(hook specs.Hook) bool {
-		return hook.Path == self && len(hook.Args) > 1 && hook.Args[1] == injection.HookCommand
+		return len(hook.Args) >= 3 && hook.Args[1] == injection.HookCommand &&
+			(hook.Args[2] == injection.CreateRuntimeHook || hook.Args[2] == injection.CreateContainerHook)
 	}
 	return slices.ContainsFunc(h.CreateRuntime, own) || slices.ContainsFunc(h.CreateContainer, own)
 }
@@ -264,6 +308,43 @@ func isBind(m specs.Mount) bool {
 
 func under(p, dir string) bool {
 	return p == dir || strings.HasPrefix(p, dir+"/")
+}
+
+// runc decodes into a struct (case-insensitive), whereas editing raw fields is
+// case-sensitive. Reject ambiguous fields rather than classifying a different spec.
+func configFields(data []byte) (map[string]json.RawMessage, error) {
+	d := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := d.Token(); err != nil || tok != json.Delim('{') {
+		return nil, errors.New("expected config object")
+	}
+	fields := make(map[string]json.RawMessage)
+	for d.More() {
+		tok, err := d.Token()
+		if err != nil {
+			return nil, err
+		}
+		key := tok.(string)
+		for _, canonical := range []string{"mounts", "hooks", "annotations"} {
+			if key != canonical && strings.EqualFold(key, canonical) {
+				return nil, fmt.Errorf("noncanonical config field %q", key)
+			}
+		}
+		if _, ok := fields[key]; ok {
+			return nil, fmt.Errorf("duplicate config field %q", key)
+		}
+		var v json.RawMessage
+		if err := d.Decode(&v); err != nil {
+			return nil, err
+		}
+		fields[key] = v
+	}
+	if _, err := d.Token(); err != nil {
+		return nil, err
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return nil, errors.New("unexpected data after config object")
+	}
+	return fields, nil
 }
 
 func unmarshalField(raw map[string]json.RawMessage, key string, v any) error {

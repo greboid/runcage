@@ -13,3 +13,5 @@ jobs:
       - uses: actions/toolkit/git-checkout@master
       - uses: actions/toolkit/go-setup@master
       - uses: actions/toolkit/go-test@master
+        env:
+          GOEXPERIMENT: runtimesecret

@@ -1,3 +1,5 @@
+//go:build linux
+
 package injection
 
 import (
@@ -57,6 +59,18 @@ func Main(args []string, stdin io.Reader, stderr io.Writer) int {
 }
 
 func run(args []string, stdin io.Reader) error {
+	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
+		return fmt.Errorf("disable hook dumpability: %w", err)
+	}
+	if err := unix.Setrlimit(unix.RLIMIT_CORE, &unix.Rlimit{Cur: 0, Max: 0}); err != nil {
+		return fmt.Errorf("disable hook core dumps: %w", err)
+	}
+	var err error
+	doSecret(func() { err = runInjection(args, stdin) })
+	return err
+}
+
+func runInjection(args []string, stdin io.Reader) error {
 	if len(args) == 0 {
 		return errors.New("missing hook name")
 	}

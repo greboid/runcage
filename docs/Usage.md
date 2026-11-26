@@ -122,7 +122,8 @@ Set the owner when the container starts as root and its entrypoint drops to
 another user: by default the files are owned by root and the dropped user
 cannot read them.
 
-Any other `g5d.dev/runcage/*` annotation is an error.
+`g5d.dev/runcage/secrets` is reserved for the runtime. Do not set it in
+Compose. No other `g5d.dev/runcage/*` service options are supported.
 
 ## Sharing a document
 
@@ -200,9 +201,27 @@ with `runcage: <reason>`. Common reasons:
 ## Limits
 
 - At most 512 keys per container, 64 KiB per value and 1 MiB in total.
-- `docker checkpoint` is refused for containers with secrets.
+- `docker checkpoint` is allowed only when runc's saved state identifies the
+  container as created or restored **without secrets** by Run cage. A container
+  created before this classification was introduced must be recreated before
+  it can be checkpointed, even if it never used secrets.
+- Restore refuses bundles with secret hooks, a SOPS marker, or a `noswap`
+  tmpfs at `/run/secrets`. Only restore trusted checkpoint images: the check
+  classifies the bundle, not the contents of a CRIU image. Keep bundles under
+  runtime control and serialize lifecycle operations on the same container ID.
+- For checkpoint and restore, put options before the single container ID.
+  Unknown options or an ambiguous target are refused.
 - Anyone with access to the Docker socket, or root on the host, can read the
   secrets, for example with `docker exec`.
-- Secrets are in container memory: core dumps, hibernation and anything the
-  application writes out can expose them.
+- Before reading an identity or document, the hook disables kernel core dumps
+  (`PR_SET_DUMPABLE=0` and both `RLIMIT_CORE` limits zero). If either call
+  fails, startup stops. These settings apply to the hook, not the application.
+- The [recommended build](install.md#binary-and-runtime) uses Go's experimental
+  `runtime/secret.Do` on Linux amd64 and arm64. It clears temporary stack and
+  register data on return; unreachable heap data is cleared when collected,
+  not necessarily before hook exit. It does not lock memory. `noswap` protects
+  the files on tmpfs, not the host hook's age identity, data key or plaintext
+  heap. Host swap and hibernation can persist that memory.
+- The application can still expose the values through its own core dumps,
+  swap or anything it writes out.
 - Key names, recipients and other SOPS metadata are not encrypted.

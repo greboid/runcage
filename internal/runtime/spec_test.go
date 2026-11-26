@@ -73,12 +73,20 @@ func rewrite(t *testing.T, cfg map[string]any) ([]byte, bool, error) {
 	return Rewrite(data, "/run/bundle", self, fakeStat)
 }
 
-func TestRewriteNoMarker(t *testing.T) {
+func TestRewritePlainClassification(t *testing.T) {
 	cfg := baseConfig()
-	data, _ := json.Marshal(cfg)
-	out, changed, err := Rewrite(data, "/run/bundle", self, fakeStat)
-	if err != nil || changed || string(out) != string(data) {
+	out, changed, err := rewrite(t, cfg)
+	if err != nil || !changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	cfg["annotations"] = map[string]string{annotationSecrets: secretsAbsent}
+	want, _ := json.Marshal(cfg)
+	if string(out) != string(want) {
+		t.Fatal("plain rewrite changed more than the classification")
+	}
+	again, changed, err := Rewrite(out, "/run/bundle", self, fakeStat)
+	if err != nil || changed || string(out) != string(again) {
+		t.Fatalf("plain rewrite not idempotent: changed=%v err=%v", changed, err)
 	}
 }
 
@@ -90,6 +98,9 @@ func TestRewriteMarker(t *testing.T) {
 	var spec specs.Spec
 	if err := json.Unmarshal(out, &spec); err != nil {
 		t.Fatal(err)
+	}
+	if spec.Annotations[annotationSecrets] != secretsPresent {
+		t.Fatal("missing creation-time secrets annotation")
 	}
 	for _, m := range spec.Mounts {
 		if strings.HasPrefix(m.Destination, "/run/sops") {
@@ -181,7 +192,7 @@ func TestRewriteErrors(t *testing.T) {
 			c["mounts"] = []any{map[string]any{"destination": "/run/sops/x", "type": "bind", "source": "x"}}
 		},
 		"already prepared": func(c map[string]any) {
-			c["hooks"] = map[string]any{"createContainer": []any{map[string]any{"path": self, "args": []string{"x", "hook"}}}}
+			c["hooks"] = map[string]any{"createContainer": []any{map[string]any{"path": self, "args": []string{"x", "hook", injection.CreateRuntimeHook}}}}
 		},
 	}
 	for name, mutate := range tests {
@@ -227,19 +238,42 @@ func TestPrepareBundle(t *testing.T) {
 
 func TestHasSecrets(t *testing.T) {
 	plain, _ := json.Marshal(baseConfig())
-	if has, err := HasSecrets(plain, self, fakeStat); err != nil || has {
+	if has, err := HasSecrets(plain); err != nil || has {
 		t.Errorf("plain config: %v %v", has, err)
 	}
 	marked, _ := json.Marshal(baseConfig(sopsMount("/run/sops/x")))
-	if has, _ := HasSecrets(marked, self, fakeStat); !has {
+	if has, _ := HasSecrets(marked); !has {
 		t.Error("marker not detected")
 	}
 	prepared, _, err := Rewrite(marked, "/run/bundle", self, fakeStat)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if has, _ := HasSecrets(prepared, self, fakeStat); !has {
+	if has, _ := HasSecrets(prepared); !has {
 		t.Error("prepared config not detected")
+	}
+}
+
+func TestClassifyPreviouslyPreparedBundle(t *testing.T) {
+	out, _, err := rewrite(t, baseConfig(sopsMount("/run/sops/x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(out, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	delete(cfg, "hooks")
+	for _, annotations := range []map[string]string{nil, {annotationSecrets: secretsAbsent}} {
+		cfg["annotations"] = annotations
+		out, changed, err := rewrite(t, cfg)
+		if err != nil || !changed {
+			t.Fatalf("changed=%v err=%v", changed, err)
+		}
+		var spec specs.Spec
+		if err := json.Unmarshal(out, &spec); err != nil || spec.Annotations[annotationSecrets] != secretsPresent {
+			t.Fatalf("legacy secret mount classified incorrectly: %v", err)
+		}
 	}
 }
 
@@ -249,7 +283,7 @@ func TestRefuseRestore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := refuseRestore(dir, self); err == nil {
+	if err := prepareBundle(dir, self, true); err == nil {
 		t.Error("restore with secrets allowed")
 	}
 }

@@ -7,12 +7,15 @@ is about where files go and what a package must not do.
 ## Build
 
 ```sh
-CGO_ENABLED=0 go build -trimpath -o runcage ./cmd/runcage
+CGO_ENABLED=0 GOEXPERIMENT=runtimesecret go build -trimpath -o runcage ./cmd/runcage
 ```
 
 - The Go version is set in `go.mod`. The result is a static binary with no
-  runtime library dependencies.
-- `go test ./...` runs the unit tests. They need Linux with `openat2` and
+  runtime library dependencies. Use `GOEXPERIMENT=runtimesecret` for production
+  builds on Linux amd64 and arm64 to enable temporary memory erasure. Without
+  it, or on other architectures, the hook still disables core dumps but has no
+  `runtime/secret` erasure guarantee.
+- `GOEXPERIMENT=runtimesecret go test ./...` runs the production-mode tests. They need Linux with `openat2` and
   unprivileged temporary directories; build sandboxes whose seccomp policy
   blocks `openat2` will fail them.
 
@@ -54,8 +57,9 @@ Docker learns about the runtime from `/etc/docker/daemon.json`:
 - Keep the runtime name `runcage`. Compose files select it with
   `runtime: runcage`, so a different name makes them non-portable.
 - Docker must be restarted after the entry is added.
-- Do not make it Docker's default runtime. Containers without a SOPS document
-  pass through unchanged, but the default should stay an explicit choice.
+- Do not make it Docker's default runtime. The runtime needs a writable OCI
+  bundle directory even for containers without secrets: it records the
+  checkpoint classification in `config.json` before create, run or restore.
 
 ## Dependencies
 
@@ -102,9 +106,9 @@ These are compiled in and cannot be changed by packaging:
 
 ## Upgrades and removal
 
-- Upgrades need no migration. The binary is only executed when a container
-  is created, so replacing it in place does not affect running containers;
-  they use the new version on their next start.
+- Replacing the binary in place does not change running workloads. A running
+  container without a saved checkpoint classification cannot be checkpointed
+  after upgrade; recreate it with the updated runtime if checkpointing is needed.
 - After removal, containers that use `runtime: runcage` fail to start until
   the runtime is reinstalled or removed from `daemon.json` and from their
   Compose files. Remove the `daemon.json` entry as part of uninstalling.

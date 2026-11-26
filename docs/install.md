@@ -11,7 +11,7 @@
 Build a static binary and install it root-owned:
 
 ```sh
-CGO_ENABLED=0 go build -trimpath -o runcage ./cmd/runcage
+CGO_ENABLED=0 GOEXPERIMENT=runtimesecret go build -trimpath -o runcage ./cmd/runcage
 install -o root -g root -m 0755 runcage /usr/bin/runcage
 ```
 

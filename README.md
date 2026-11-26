@@ -8,8 +8,8 @@
 Run cage is a thin OCI runtime wrapper around `runc` that decrypts a SOPS
 document and provides its keys as files in `/run/secrets`, on a read-only
 per-container tmpfs. It is configured with plain Compose `secrets:`, needs no
-daemon or systemd service, and leaves no plaintext on disk or in
-`docker inspect`. It works with [secret-env](https://git.mouse-lake.ts.net/greboid/secret-env)
+daemon or systemd service, and writes decrypted values only to the tmpfs,
+not to the OCI config or `docker inspect`. See the [memory exposure limits](docs/Usage.md#limits). It works with [secret-env](https://git.mouse-lake.ts.net/greboid/secret-env)
 unmodified.
 
 ## Example

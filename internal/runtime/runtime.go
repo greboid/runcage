@@ -17,7 +17,11 @@ const DefaultRunc = "/usr/bin/runc"
 
 // Does not return on success.
 func Main(args []string) int {
-	inv := ParseArgs(args)
+	inv, err := ParseArgs(args)
+	if err != nil {
+		report(inv, err)
+		return 1
+	}
 	self, err := os.Executable()
 	if err == nil {
 		self, err = filepath.EvalSymlinks(self)
@@ -35,9 +39,9 @@ func Main(args []string) int {
 	case "create", "run":
 		err = PrepareBundle(inv.Bundle, self)
 	case "checkpoint":
-		err = refuseCheckpoint(runc, inv, self)
+		err = refuseCheckpoint(runc, inv)
 	case "restore":
-		err = refuseRestore(inv.Bundle, self)
+		err = prepareBundle(inv.Bundle, self, true)
 	}
 	if err != nil {
 		report(inv, err)
@@ -51,40 +55,34 @@ func Main(args []string) int {
 // CRIU would write the tmpfs to disk.
 var errCheckpoint = errors.New("checkpoint and restore are not supported for containers with secrets")
 
-func refuseCheckpoint(runc string, inv Invocation, self string) error {
+func refuseCheckpoint(runc string, inv Invocation) error {
 	if inv.ID == "" {
-		return nil
+		return errors.New("checkpoint requires a container ID")
 	}
-	args := append(slices.Clone(inv.Global), "state", inv.ID)
+	args := append(slices.Clone(inv.Global), "state", "--", inv.ID)
 	out, err := exec.Command(runc, args...).Output()
 	if err != nil {
 		return fmt.Errorf("cannot query container state: %w", err)
 	}
-	var state struct {
-		Bundle string `json:"bundle"`
-	}
-	if err := json.Unmarshal(out, &state); err != nil || state.Bundle == "" {
-		return errors.New("cannot query container state: no bundle")
-	}
-	return refuseRestore(state.Bundle, self)
+	return checkpointState(out, inv.ID)
 }
 
-func refuseRestore(bundle, self string) error {
-	if bundle == "" {
-		bundle = "."
+func checkpointState(out []byte, id string) error {
+	var state struct {
+		ID          string            `json:"id"`
+		Annotations map[string]string `json:"annotations"`
 	}
-	data, err := os.ReadFile(filepath.Join(bundle, "config.json"))
-	if err != nil {
-		return fmt.Errorf("cannot read config: %w", err)
+	if err := json.Unmarshal(out, &state); err != nil || state.ID != id {
+		return errors.New("cannot verify checkpoint target in runc state")
 	}
-	has, err := HasSecrets(data, self, os.Stat)
-	if err != nil {
-		return err
-	}
-	if has {
+	switch state.Annotations[annotationSecrets] {
+	case secretsAbsent:
+		return nil
+	case secretsPresent:
 		return errCheckpoint
+	default:
+		return errors.New("checkpoint refused: no recognized creation-time secrets classification; recreate the container with runcage")
 	}
-	return nil
 }
 
 func FindRunc(self string) (string, error) {
