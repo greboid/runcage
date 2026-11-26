@@ -191,6 +191,7 @@ with `runcage: <reason>`. Common reasons:
 | `data key recovery failed: the age identity cannot decrypt this document` | The document is not encrypted to this host's recipient. |
 | `integrity check failed: MAC mismatch ...` | The document was edited without sops, or is corrupt. |
 | `secret "X" has a integer value; all values must be YAML strings` | Quote the value in the document. |
+| `secret "X_unencrypted" is not encrypted ...` | Unencrypted keys are not supported. Rename the key. |
 | `key "X" not in document` | A key in `g5d.dev/runcage/keys` is missing from the document. |
 | `key "x.y" cannot be a secret file name ...` | Rename the key, or leave it out with `g5d.dev/runcage/keys`. |
 | `more than one document under /run/sops` | Only one document per service. |
@@ -218,3 +219,5 @@ with `runcage: <reason>`. Common reasons:
 - The application can still expose the values through its own core dumps,
   swap or output.
 - Key names, recipients and other SOPS metadata are not encrypted.
+- Documents are encrypted, not signed. The recipient is public, so anyone who
+  can write the document can replace its secrets.

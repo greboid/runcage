@@ -44,6 +44,20 @@ func TestEncryptRoundTrip(t *testing.T) {
 	}
 }
 
+// An empty value leaves the MAC unchanged, so this needs no key to add.
+func TestDecryptRejectsUnencrypted(t *testing.T) {
+	id := newIdentity(t)
+	doc, err := Encrypt([]byte("a: b\n"), []*age.X25519Recipient{id.Recipient()}, DefaultLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc = append(doc, "LD_PRELOAD_unencrypted: \"\"\n"...)
+	_, err = Decrypt(doc, []age.Identity{id}, DefaultLimits)
+	if err == nil || !strings.Contains(err.Error(), "LD_PRELOAD_unencrypted") {
+		t.Fatalf("unencrypted entry accepted: %v", err)
+	}
+}
+
 func TestEncryptRejections(t *testing.T) {
 	r := []*age.X25519Recipient{newIdentity(t).Recipient()}
 	for _, in := range []string{"a: 1\n", "a: {b: c}\n", "sops: x\n", "a_unencrypted: x\n", "", "x.y z: a\n"} {

@@ -71,6 +71,12 @@ func Decrypt(encrypted []byte, identities []age.Identity, limits Limits) ([]Secr
 	if err != nil {
 		return nil, err
 	}
+	// The MAC does not bind unencrypted values to their names.
+	for _, e := range d.entries {
+		if e.plain {
+			return nil, fmt.Errorf("secret %q is not encrypted (name ends with %q)", e.name, d.meta.unencryptedSuffix())
+		}
+	}
 	dataKey, err := d.unwrap(identities)
 	if err != nil {
 		return nil, errors.New("data key recovery failed: the age identity cannot decrypt this document")
